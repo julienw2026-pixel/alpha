@@ -31,20 +31,41 @@ jobs:
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path out/tools/whisper/models | Out-Null
 
-          # whisper.cpp prebuilt binaries (x64)
-          $zipUrl = "https://github.com/ggerganov/whisper.cpp/releases/download/v1.7.4/whisper-bin-x64.zip"
-          $zipPath = "${env:RUNNER_TEMP}/whisper-bin-x64.zip"
-          Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
+          function Download-WithRetry([string]$Url, [string]$OutFile) {
+            for ($i=0; $i -lt 3; $i++) {
+              try {
+                Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing
+                return
+              } catch {
+                if ($i -eq 2) { throw }
+                Start-Sleep -Seconds (2 + 2*$i)
+              }
+            }
+          }
+
+          # Resolve a Windows x64 whisper.cpp asset dynamically (avoid hardcoded names)
+          $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/ggerganov/whisper.cpp/releases/latest" -Headers @{"User-Agent"="meeting-scribe"}
+          $asset = $rel.assets | Where-Object {
+            $_.name -match 'win' -and ($_.name -match 'x64|amd64') -and $_.name -match '\.zip$'
+          } | Select-Object -First 1
+
+          if (-not $asset) {
+            throw "Could not find a suitable whisper.cpp Windows x64 zip in latest release assets"
+          }
+
+          $zipUrl = $asset.browser_download_url
+          $zipPath = "${env:RUNNER_TEMP}/whisper.zip"
+          Download-WithRetry $zipUrl $zipPath
           Expand-Archive -Path $zipPath -DestinationPath "${env:RUNNER_TEMP}/whisper" -Force
 
           # Copy CLI
           $cli = Get-ChildItem -Recurse -Path "${env:RUNNER_TEMP}/whisper" -Filter "whisper-cli.exe" | Select-Object -First 1
-          if (-not $cli) { throw "whisper-cli.exe not found in release zip" }
+          if (-not $cli) { throw "whisper-cli.exe not found in whisper.cpp asset zip" }
           Copy-Item $cli.FullName -Destination out/tools/whisper/whisper-cli.exe -Force
 
-          # Download model
+          # Download model (with retry)
           $modelUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin"
-          Invoke-WebRequest -Uri $modelUrl -OutFile out/tools/whisper/models/ggml-small.bin
+          Download-WithRetry $modelUrl "out/tools/whisper/models/ggml-small.bin"
 
       - name: Zip
         run: powershell -Command "Compress-Archive -Path out/* -DestinationPath MeetingScribe-win-x64.zip"
