@@ -25,6 +25,27 @@ jobs:
       - name: Publish
         run: dotnet publish src/MeetingScribe/MeetingScribe.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o out
 
+      - name: Download whisper.cpp + model
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path out/tools/whisper/models | Out-Null
+
+          # whisper.cpp prebuilt binaries (x64)
+          $zipUrl = "https://github.com/ggerganov/whisper.cpp/releases/download/v1.7.4/whisper-bin-x64.zip"
+          $zipPath = "${env:RUNNER_TEMP}/whisper-bin-x64.zip"
+          Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
+          Expand-Archive -Path $zipPath -DestinationPath "${env:RUNNER_TEMP}/whisper" -Force
+
+          # Copy CLI
+          $cli = Get-ChildItem -Recurse -Path "${env:RUNNER_TEMP}/whisper" -Filter "whisper-cli.exe" | Select-Object -First 1
+          if (-not $cli) { throw "whisper-cli.exe not found in release zip" }
+          Copy-Item $cli.FullName -Destination out/tools/whisper/whisper-cli.exe -Force
+
+          # Download model
+          $modelUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin"
+          Invoke-WebRequest -Uri $modelUrl -OutFile out/tools/whisper/models/ggml-small.bin
+
       - name: Zip
         run: powershell -Command "Compress-Archive -Path out/* -DestinationPath MeetingScribe-win-x64.zip"
 
