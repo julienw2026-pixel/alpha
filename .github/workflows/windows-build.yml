@@ -1,0 +1,35 @@
+name: windows-build
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore MeetingScribe.sln
+
+      - name: Build
+        run: dotnet build MeetingScribe.sln -c Release --no-restore
+
+      - name: Publish
+        run: dotnet publish src/MeetingScribe/MeetingScribe.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o out
+
+      - name: Zip
+        run: powershell -Command "Compress-Archive -Path out/* -DestinationPath MeetingScribe-win-x64.zip"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MeetingScribe-win-x64
+          path: MeetingScribe-win-x64.zip
