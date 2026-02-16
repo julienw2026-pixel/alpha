@@ -25,7 +25,7 @@ jobs:
       - name: Publish
         run: dotnet publish src/MeetingScribe/MeetingScribe.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o out
 
-      - name: Download whisper.cpp + model
+      - name: Download/build whisper.cpp + model
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -43,25 +43,44 @@ jobs:
             }
           }
 
-          # Resolve a Windows x64 whisper.cpp asset dynamically (avoid hardcoded names)
-          $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/ggerganov/whisper.cpp/releases/latest" -Headers @{"User-Agent"="meeting-scribe"}
-          $asset = $rel.assets | Where-Object {
-            $_.name -match 'win' -and ($_.name -match 'x64|amd64') -and $_.name -match '\.zip$'
-          } | Select-Object -First 1
+          $cliOut = "out/tools/whisper/whisper-cli.exe"
+          $gotCli = $false
 
-          if (-not $asset) {
-            throw "Could not find a suitable whisper.cpp Windows x64 zip in latest release assets"
+          try {
+            # Try to resolve a Windows x64 whisper.cpp asset dynamically
+            $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/ggerganov/whisper.cpp/releases/latest" -Headers @{"User-Agent"="meeting-scribe"}
+            $asset = $rel.assets | Where-Object {
+              $_.name -match 'win' -and ($_.name -match 'x64|amd64') -and $_.name -match '\.zip$'
+            } | Select-Object -First 1
+
+            if ($asset) {
+              $zipUrl = $asset.browser_download_url
+              $zipPath = "${env:RUNNER_TEMP}/whisper.zip"
+              Download-WithRetry $zipUrl $zipPath
+              Expand-Archive -Path $zipPath -DestinationPath "${env:RUNNER_TEMP}/whisper" -Force
+              $cli = Get-ChildItem -Recurse -Path "${env:RUNNER_TEMP}/whisper" -Filter "whisper-cli.exe" | Select-Object -First 1
+              if ($cli) {
+                Copy-Item $cli.FullName -Destination $cliOut -Force
+                $gotCli = $true
+              }
+            }
+          } catch {
+            Write-Host "Asset download path failed; will fallback to build from source."
           }
 
-          $zipUrl = $asset.browser_download_url
-          $zipPath = "${env:RUNNER_TEMP}/whisper.zip"
-          Download-WithRetry $zipUrl $zipPath
-          Expand-Archive -Path $zipPath -DestinationPath "${env:RUNNER_TEMP}/whisper" -Force
+          if (-not $gotCli) {
+            # Fallback: build whisper.cpp from source on the runner (slower but reliable)
+            git clone --depth 1 https://github.com/ggerganov/whisper.cpp "${env:RUNNER_TEMP}/whisper-src"
+            Push-Location "${env:RUNNER_TEMP}/whisper-src"
+            mkdir build
+            cmake -S . -B build -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=ON
+            cmake --build build --config Release
 
-          # Copy CLI
-          $cli = Get-ChildItem -Recurse -Path "${env:RUNNER_TEMP}/whisper" -Filter "whisper-cli.exe" | Select-Object -First 1
-          if (-not $cli) { throw "whisper-cli.exe not found in whisper.cpp asset zip" }
-          Copy-Item $cli.FullName -Destination out/tools/whisper/whisper-cli.exe -Force
+            $cli = Get-ChildItem -Recurse -Path build -Filter "whisper-cli.exe" | Select-Object -First 1
+            if (-not $cli) { throw "whisper-cli.exe not produced by source build" }
+            Copy-Item $cli.FullName -Destination $cliOut -Force
+            Pop-Location
+          }
 
           # Download model (with retry)
           $modelUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin"
